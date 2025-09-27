@@ -279,18 +279,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#configure-the-networking" class="md-nav__link">
+  <a href="#create-the-container-network" class="md-nav__link">
     <span class="md-ellipsis">
-      Configure The Networking
+      Create the Container Network
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#create-manual-pods-1-2" class="md-nav__link">
+  <a href="#create-the-pod-container" class="md-nav__link">
     <span class="md-ellipsis">
-      Create Manual Pods 1 &amp; 2
+      Create the Pod Container
     </span>
   </a>
   
@@ -379,18 +379,18 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#configure-the-networking" class="md-nav__link">
+  <a href="#create-the-container-network" class="md-nav__link">
     <span class="md-ellipsis">
-      Configure The Networking
+      Create the Container Network
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#create-manual-pods-1-2" class="md-nav__link">
+  <a href="#create-the-pod-container" class="md-nav__link">
     <span class="md-ellipsis">
-      Create Manual Pods 1 &amp; 2
+      Create the Pod Container
     </span>
   </a>
   
@@ -450,58 +450,67 @@
 
 
 <h1 id="manual-setup-of-kubernetes-services-using-iptables">Manual Setup of Kubernetes Services using IPtables</h1>
-<p>TThis is a series of discussions that builds off <a href="https://guide.aws.dev/articles/AR2fdoT2ZkSlGyX9JMVwNfeQ#midway">Dola's article on Kubernetes networking and iptables</a>. We take a look at a hands-on implementation of a custom cluster networking, to fully understand how Kubernetes sets up its own;</p>
+<p>This post inroduces a series of articles introducing a low level look into how container networking can be set up in a Kubernetes cluster.</p>
+<p>The Kubernetes project <a href="https://www.cni.dev/docs/">defines a CNI standard</a> that all cluster CNI (container network interface) adhere to. However, asides from exposing the expected plugin endpoint for Kubernetes container orchestration, exact details on how each CNI implements container networking is left up to the designers of each CNI. Meaning exact implementation of CNI varies from one plugin to the next.</p>
+<p>We attempt a hands-on implementation of how a CNI would set up container networking in a cluster, ignoring the exposing the CNI endpoints for kubernetes for now. Instead we focus on setting up a container network with;</p>
 <ul>
-<li>iptables configuration for pod-to-pod, and pod-to-external-endpoint connections, </li>
-<li>ipvs and nftable implementation, replacing iptables - to reduce the number of iptables rules required, which could grow very large, </li>
-<li>and round off with troubleshooting suggestion for aws-node(CNI) liveness/readiness probe errors, and component failures connecting to <code>kubernetes.svc</code> API endpoint within cluster.</li>
+<li>iptables used to configure network routes for pod-to-pod, and pod-to-service and pod-to-external-endpoint connections,</li>
+<li>Linux networking to set up isolated pod(container) network namespaces, </li>
+<li>ipvs and nftable implementation, replacing iptables - to reduce the number of iptables rules required for pod communication,</li>
+<li><em>and round off with exposing the CNI spec endpoint</em> </li>
+<li>possibly some troubleshooting tips for <a href="https://github.com/aws/amazon-vpc-cni-k8s">aws-vpc-cni</a>(CNI)
+~~liveness/readiness probe errors, and component failures connecting to <code>kubernetes.svc</code> API endpoint within cluster.~~</li>
 </ul>
 <h3 id="implementation">Implementation</h3>
-<p>This hands-on tutorial starts by building 2 pod network sandboxes manually, and pointing out what part of this process would be implemented by Kubelet, CRI, CNI and kube-proxy. It is recommended to try this on an cluster worker-node with some pods running, to be able to contrast the manual pods with some Kubernetes pod under k8s.io contaunerd namespace, and also to take advantage of some system network configuration, but not a requirement.</p>
-<p>Some simplification we introduce in creating a pod eliminates certain Kubernetes complexities during pod creation, like;</p>
+<p>We start of our discussion in this post by creating a manual network namespace for two containers (pod sandboxes) manually, while ensuring to point out what part of the pod network creation process would be normally be handled by Kubelet, CRI, CNI and kube-proxy. The network configurations can be implemented on any Linux environment, or even an existing Linux cluster worker node with running workload. The custom container network we create are isolated, and should not interfere with your pod netwokr. It is also provides more insight to be able to contrast our manual container network with some implemented CNI network on existing worker nodes.</p>
+<p>Some simplification we introduce in creating a pod sandbox eliminates certain Kubernetes complexities during pod creation such as;</p>
 <ul>
-<li>kubelet creating a podA.slice CPU cgroup under /run/systemd/system/kubepods.slice hierarchy, instead we use the default user slice for the manual pods</li>
-<li>Container runtime interface (CRI) creating a sandbox for pod under /var/lib/containerd/io.containerd.runtime.v2.task/default/, instead we use the "default" containerd pod namespace</li>
-<li>we however, do the container network interface (CNI) tasks of creating a network namespace (net-ns), managing IP, and wiring up the network, similarly to how they are done on Kubernetes clusters. This is a very CNI-dependent process, but the networking expectations remain the same.</li>
-<li>then we run a container task in these network namespaces. So let's dive right in shall we.</li>
+<li>kubelet creating pods' cgroup under /run/systemd/system/kubepods.slice hierarchy, burstable, best-effort, etc., instead we use the default user slice for the containers</li>
+<li>kuberntes container runtime interface (CRI) creating a sandbox for pod under /var/lib/containerd/io.containerd.runtime.v2.task/default/, instead we use the "default" containerd namespace</li>
 </ul>
-<h4 id="configure-the-networking">Configure The Networking</h4>
-<p>Let's start with a few handy commands to take a look at the current network namespaces(net-ns) on the computer/worker-node, and the network interfaces. We will run these commands often as we progress to see the changes configured. It is possible to already have net namespaces(net-ns) built by a cluster CNI, e.g, cni-ABCDEFG on a worker node.</p>
+<p>we however, do the container network interface (CNI) tasks of creating a network namespace (net-ns), managing IP, and wiring up the network, similar to how they are done by Kubernetes CNI applicatinos. This is a very CNI-dependent process, but the networking expectations remain the same. So let's dive right in shall we.</p>
+<h4 id="create-the-container-network">Create the Container Network</h4>
+<p>Let's start with a few handy commands to take a look at the current network namespaces(net-ns) on the computer/worker-node, and the network interfaces. We will run these commands often as we progress to see the changes configured. It is possible to already have net namespaces(net-ns) built by a cluster CNI if running on an existing worker node.</p>
 <pre><code class="language-sh">sudo ip netns
 sudo ip link show
 </code></pre>
 <ol>
-<li>We create two new network namespaces(net-ns) of our own for the pods, <code>pod-1</code> and <code>pod-2</code>, that we will create manually. We will call these namespaces <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>. Nomenclature is to indicate we are using kernel virtual ethernet devices. Run the handy check commands above after this configuration to see the changes in current net-ns again.</li>
+<li>We create two new network namespaces(net-ns) of our own for the pods, <code>pod-1</code> and <code>pod-2</code>, that we will create. We will call these namespaces <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>. Nomenclature is to indicate we are using kernel virtual ethernet devices, they can be named differently. Run the handy check commands above after making the configuration to see the changes net-ns on the system.</li>
 </ol>
 <pre><code class="language-sh">sudo ip netns add veth-ns-test-pod-1
 sudo ip netns add veth-ns-test-pod-2
 </code></pre>
 <ol start="2">
-<li>Next, we create the Linux virtual ethernet network devices used for by the pod sandbox, and at the same time, the peer for these veth interfaces.</li>
+<li>Next, we create the Linux virtual ethernet network devices used by the containers in the network namespaces we just created, and at the same time the peer for these veth interfaces. Run the handy check commands again to view the current devices on the compute after the configuration below.</li>
 </ol>
-<p>|    a. run the handy checks to view the current devices on the compute after the configuration below</p>
 <pre><code class="language-sh">sudo ip link add veth-pod-1 type veth peer name veth-peer-pod-1
 sudo ip link add veth-pod-2 type veth peer name veth-peer-pod-2
 </code></pre>
 <ol start="3">
-<li>In no particular order, we need to move the <code>veth-pod-1</code> and <code>veth-pod-2</code> devices into the network namespaces, <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>, respectively. This could have been done with step 2 above, but for clarity, we do this separately.</li>
-</ol>
-<p>|    a. again run the handy check after the configuration below, and <code>veth-pod-1@veth-peer-pod-1</code> and <code>veth-pod-2@veth-peer-pod-2</code> interfaces should no longer be listed in the host's network, while the peers are. The veth interfaces have been moved into distinct net-ns.</p>
-<pre><code class="language-sh">sudo ip link set dev veth-pod-1 netns veth-ns-test-pod-1
+<li>
+<p>In no particular order, we need to move the <code>veth-pod-1</code> and <code>veth-pod-2</code> devices into the network namespaces, <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>, respectively. This could have been done with step 2 above, but for clarity, we do this separately. And we leave the peer of each veth in the host network namespace for now.</p>
+<p>|   a. again run the handy check after the configuration below, and <code>veth-pod-1@veth-peer-pod-1</code> and <code>veth-pod-2@veth-peer-pod-2</code> interfaces should no longer be listed in the host's net-ns, while the peers are. The veth interfaces would have been moved into distinct net-ns.</p>
+<pre><code>```sh
+sudo ip link set dev veth-pod-1 netns veth-ns-test-pod-1
 sudo ip link set dev veth-pod-2 netns veth-ns-test-pod-2
+```
 </code></pre>
 <p>|    b. To see the veth devices in their respective namespaces, run;</p>
-<pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 ip link show
+<pre><code>```sh
+sudo ip netns exec veth-ns-test-pod-1 ip link show
 sudo ip netns exec veth-ns-test-pod-2 ip link show
+```
 </code></pre>
-<ol start="4">
-<li>Notice in the command above that the Loopback interface in the network namespaces are currently DOWN. We need to turn this <code>UP</code> or basic 127.0.0.1 network connections; e.g self-health check on localhost:8080/healthz would fail for the processes(pods) in these network namespaces</li>
+</li>
+<li>
+<p>Notice in the command above that the Loopback interface in the custom pod network namespaces are currently DOWN. We can turn this UP in this step ton allow basic (127.0.0.1)loopback network connections. For example, processes(containers) in our network namespaces require this netowrk config in order to perform a self-health check on localhost:8080/healthz.</p>
+</li>
 </ol>
 <pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 ip link set dev lo up
 sudo ip netns exec veth-ns-test-pod-2 ip link set dev lo up
 </code></pre>
 <ol start="5">
-<li>Also, notice that the veth interfaces in the custom namespaces, and the peers in the host network namespace are also DOWN, lets set all these up;</li>
+<li>We also note that the veth interfaces moved into the custom network namespaces, and the veth peers left in the host network namespace are also DOWN, lets set all these up;</li>
 </ol>
 <pre><code class="language-sh">sudo ip link set dev veth-peer-pod-1 up
 sudo ip link set dev veth-peer-pod-2 up
@@ -510,7 +519,7 @@ sudo ip netns exec veth-ns-test-pod-1 ip link set dev veth-pod-1 up
 sudo ip netns exec veth-ns-test-pod-2 ip link set dev veth-pod-2 up
 </code></pre>
 <hr />
-<h4 id="create-manual-pods-1-2">Create Manual Pods 1 &amp; 2</h4>
+<h4 id="create-the-pod-container">Create the Pod Container</h4>
 <p>At this point, we can a rough pod networking setup and can rollout test containers into pod sandboxes using these net-ns and poke around inside the pod. This should reveal the current networking limitations, as the work of the CNI is mostly done, but we haven't wired up the network yet, no IP assigned to pod, no routes for pod-to-pod or external endpoints, etc., we can then fix these limitations.</p>
 <ol start="6">
 <li>We create two container/task sandboxes (pods) in a similar directory where containerd(CRI) creates Kubernetes pods sandboxes. You should look around this directory if desired to see running pods, if you have them.</li>
