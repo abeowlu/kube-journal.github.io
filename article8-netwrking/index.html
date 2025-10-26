@@ -462,7 +462,7 @@
 ~~liveness/readiness probe errors, and component failures connecting to <code>kubernetes.svc</code> API endpoint within cluster.~~</li>
 </ul>
 <h3 id="implementation">Implementation</h3>
-<p>We start of our discussion in this post by creating a manual network namespace for two containers (pod sandboxes) manually, while ensuring to point out what part of the pod network creation process would be normally be handled by Kubelet, CRI, CNI and kube-proxy. The network configurations can be implemented on any Linux environment, or even an existing Linux cluster worker node with running workload. The custom container network we create are isolated, and should not interfere with your pod netwokr. It is also provides more insight to be able to contrast our manual container network with some implemented CNI network on existing worker nodes.</p>
+<p>We start of our discussion in this post by creating a manual network namespace for two containers, while ensuring to point out what part of the pod network creation process would be normally be handled by Kubelet, CRI, CNI and kube-proxy. The network configurations can be implemented on any Linux environment, or even an existing cluster Linux worker node with running workload. The custom container network we create are isolated, and should ordinarily not interfere with any existing infrastructure It may also provide some insight to be able to contrast our manual implementation with CNI network on existing worker nodes.</p>
 <p>Some simplification we introduce in creating a pod sandbox eliminates certain Kubernetes complexities during pod creation such as;</p>
 <ul>
 <li>kubelet creating pods' cgroup under /run/systemd/system/kubepods.slice hierarchy, burstable, best-effort, etc., instead we use the default user slice for the containers</li>
@@ -475,20 +475,20 @@
 sudo ip link show
 </code></pre>
 <ol>
-<li>We create two new network namespaces(net-ns) of our own for the pods, <code>pod-1</code> and <code>pod-2</code>, that we will create. We will call these namespaces <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>. Nomenclature is to indicate we are using kernel virtual ethernet devices, they can be named differently. Run the handy check commands above after making the configuration to see the changes net-ns on the system.</li>
+<li>We create two new network namespaces of our own for the pods, <code>pod-1</code> and <code>pod-2</code>. We will call these namespaces <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>. Nomenclature is to indicate we are using kernel virtual ethernet devices, they can be named differently. Run the handy check commands above after making changes to see the configuration changed on the system.</li>
 </ol>
 <pre><code class="language-sh">sudo ip netns add veth-ns-test-pod-1
 sudo ip netns add veth-ns-test-pod-2
 </code></pre>
 <ol start="2">
-<li>Next, we create the Linux virtual ethernet network devices used by the containers in the network namespaces we just created, and at the same time the peer for these veth interfaces. Run the handy check commands again to view the current devices on the compute after the configuration below.</li>
+<li>Next, we create the Linux virtual ethernet network devices used by the containers in the network namespaces we just created, and at the same time the peer for these veth interfaces.</li>
 </ol>
 <pre><code class="language-sh">sudo ip link add veth-pod-1 type veth peer name veth-peer-pod-1
 sudo ip link add veth-pod-2 type veth peer name veth-peer-pod-2
 </code></pre>
 <ol start="3">
-<li>
-<p>In no particular order, we need to move the <code>veth-pod-1</code> and <code>veth-pod-2</code> devices into the network namespaces, <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>, respectively. This could have been done with step 2 above, but for clarity, we do this separately. And we leave the peer of each veth in the host network namespace for now.</p>
+<li>In no particular order, we need to move the <code>veth-pod-1</code> and <code>veth-pod-2</code> devices into the network namespaces, <code>veth-ns-test-pod-1</code> and <code>veth-ns-test-pod-2</code>, respectively. And we leave the peer of each veth in the host network namespace for now.</li>
+</ol>
 <p>|   a. again run the handy check after the configuration below, and <code>veth-pod-1@veth-peer-pod-1</code> and <code>veth-pod-2@veth-peer-pod-2</code> interfaces should no longer be listed in the host's net-ns, while the peers are. The veth interfaces would have been moved into distinct net-ns.</p>
 <pre><code>```sh
 sudo ip link set dev veth-pod-1 netns veth-ns-test-pod-1
@@ -501,10 +501,8 @@ sudo ip netns exec veth-ns-test-pod-1 ip link show
 sudo ip netns exec veth-ns-test-pod-2 ip link show
 ```
 </code></pre>
-</li>
-<li>
-<p>Notice in the command above that the Loopback interface in the custom pod network namespaces are currently DOWN. We can turn this UP in this step ton allow basic (127.0.0.1)loopback network connections. For example, processes(containers) in our network namespaces require this netowrk config in order to perform a self-health check on localhost:8080/healthz.</p>
-</li>
+<ol start="4">
+<li>Notice in the command above that the Loopback interface in the custom pod network namespaces are currently DOWN. We can turn this UP in this step to allow basic (127.0.0.1)loopback network connections. For example, processes(containers) in our network namespaces require this netowrk config in order to perform a self-health check on localhost:8080/healthz</li>
 </ol>
 <pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 ip link set dev lo up
 sudo ip netns exec veth-ns-test-pod-2 ip link set dev lo up
@@ -520,14 +518,14 @@ sudo ip netns exec veth-ns-test-pod-2 ip link set dev veth-pod-2 up
 </code></pre>
 <hr />
 <h4 id="create-the-pod-container">Create the Pod Container</h4>
-<p>At this point, we can a rough pod networking setup and can rollout test containers into pod sandboxes using these net-ns and poke around inside the pod. This should reveal the current networking limitations, as the work of the CNI is mostly done, but we haven't wired up the network yet, no IP assigned to pod, no routes for pod-to-pod or external endpoints, etc., we can then fix these limitations.</p>
+<p>At this point, we have a rough pod network namespace setup. We can rollout test containers into pod sandboxes using these net-ns and poke around inside the sandbox. This should reveal the current networking limitations, as the setup done by most CNIs is complete, except we haven’t wired up the network with an assigned IP yet, or routes for pod-to-pod or external endpoints connection etc.</p>
 <ol start="6">
-<li>We create two container/task sandboxes (pods) in a similar directory where containerd(CRI) creates Kubernetes pods sandboxes. You should look around this directory if desired to see running pods, if you have them.</li>
+<li>We create two container sandboxes in a similar directory where containerd (CRI) creates Kubernetes pods' sandboxes. You can poke around this directory if following this on an existing kubernetes cluster worker node and would like to see running pods' container, if there are any.</li>
 </ol>
 <pre><code class="language-sh">sudo mkdir -p /run/containerd/pod-1/
 sudo mkdir -p /run/containerd/pod-2/
 </code></pre>
-<p>|   a. we are going to pull a trusted nginx container image as the base image for all our containers, and create a container spec -  a container config.json specifies how runc initialized a container. This is similar to kubelet invoking the CRI, which pulls and validates the pod container images.</p>
+<p>|   a. we are going to pull an nginx container image as the test base image, and create a runc container spec -  a json configuration manifest specifying how runc builds a container. This is similar to kubelet invoking the CRI specified in its own config, which will pull and validate the pod's container images, and then uses a runtime such as runc to start the container.</p>
 <pre><code class="language-sh">sudo ctr image pull docker.io/nginxinc/nginx-unprivileged:latest &amp;&amp; \
 sudo ctr run --detach docker.io/nginxinc/nginx-unprivileged:latest default-nginx
 
@@ -537,11 +535,13 @@ sudo cp -r /run/containerd/io.containerd.runtime.v2.task/default/default-nginx/r
 cd /run/containerd/pod-2/ &amp;&amp; sudo runc spec 
 cd /run/containerd/pod-1/ &amp;&amp; sudo runc spec
 </code></pre>
-<p>NB: you can always check on what config has changed in the container spec at any point, by making a backup now for later comparisons</p>
-<pre><code class="language-sh">sudo cp config.json config.json.bkp
-sudo diff -y config.json.bkp config.json
-</code></pre>
-<p>|   b. update the container spec with the manually created network namespaces for both pod-1 and pod-2, and and start the container using runc. This is exactly how containerd starts containers for kubelet as well. Created network namespaces are located in <code>/var/run/netns</code></p>
+<div class="admonition insight">
+<p class="admonition-title">Insight</p>
+<p>Note: you can always check on what config has changed in the container spec at any point by making a backup now for later comparisons</p>
+<p><code>sudo cp config.json config.json.bkp &amp;&amp;
+sudo diff -y config.json.bkp config.json</code></p>
+</div>
+<p>|   b. next, we update the container spec with the manually created network namespaces for both pod-1 and pod-2, and start the container using runc. This is exactly how containerd starts containers for kubelet as well. The network namespaces we created are located by default in <code>/var/run/netns</code></p>
 <pre><code class="language-sh">echo $(jq '(.linux.namespaces[] | select(.type == &quot;network&quot;)) += \
 {&quot;path&quot;: &quot;/var/run/netns/veth-ns-test-pod-1&quot;}' /run/containerd/pod-1/config.json)  \
 | sudo tee -i /run/containerd/pod-1/config.json
@@ -550,7 +550,7 @@ echo $(jq '(.linux.namespaces[] | select(.type == &quot;network&quot;)) += \
 {&quot;path&quot;: &quot;/var/run/netns/veth-ns-test-pod-2&quot;}' /run/containerd/pod-2/config.json) \
 | sudo tee -i /run/containerd/pod-2/config.json
 </code></pre>
-<p>|   c. let us also set the default nginx startup instructions to ensure the servers start, this is the pod manifest <code>.spec.containers[].command</code> in kubernetes. Also, allow container root access (not strictly required for the nginx image used), and add some Linux CAPs, these are necessary for nginx servers to start up with required network capabilities;</p>
+<p>|   c. we should also set the default nginx startup instructions to ensure the application starts correctly. This is similar to pod manifest <code>.spec.containers[].command</code> in kubernetes. Also, allow container root access (not strictly required for the particular nginx image we selected), and add some Linux cspabilities (CAPs), these are necessary for nginx servers to start up with required network capabilities;</p>
 <pre><code class="language-sh">sudo echo $(jq '.process.capabilities.bounding += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] \
 | .process.capabilities.permitted += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] \
 | .root.readonly = false | .process.args = [ &quot;/docker-entrypoint.sh&quot;, &quot;nginx&quot;, &quot;-g&quot;, &quot;daemon off;&quot; ]' /run/containerd/pod-1/config.json)  \
@@ -561,44 +561,46 @@ sudo echo $(jq '.process.capabilities.bounding += [ &quot;CAP_CHOWN&quot;, &quot
 | .root.readonly = false | .process.args = [ &quot;/docker-entrypoint.sh&quot;, &quot;nginx&quot;, &quot;-g&quot;, &quot;daemon off;&quot; ]' /run/containerd/pod-2/config.json) \
 | sudo jq '.' | sudo tee -i /run/containerd/pod-2/config.json
 </code></pre>
-<p>|   d. Next, we now run the containers. The way we invoke <a href="https://github.com/opencontainers/runc/blob/main/docs/terminals.md">runc without providing file descriptors</a>, we need to start different shell sessions for each container.</p>
-<pre><code class="language-sh">cd /run/containerd/pod-1/ &amp;&amp; sudo runc run pod-1
-cd /run/containerd/pod-2/ &amp;&amp; sudo runc run pod-1
-sudo runc list
+<p>|   d. Next, we now run the containers. The way we invoke <a href="https://github.com/opencontainers/runc/blob/main/docs/terminals.md">runc without providing custom file descriptors</a> requires running in foreground mode and use the current shell's primary file descriptors (fds), stdin, stdout and stderr. So we create 2 new terminal sessions to start the 2 containers.</p>
+<pre><code class="language-sh">Terminal 1: cd /run/containerd/pod-1/ &amp;&amp; sudo runc run pod-1
+Terminal 2: cd /run/containerd/pod-2/ &amp;&amp; sudo runc run pod-1
+Terminal 0: sudo runc list
 </code></pre>
 <div class="admonition info">
 <p class="admonition-title">Runc Terminal Handling</p>
-<p>In order to keep this discussion streamlined, we are going to let runc reparent the container process to the calling shells  - in other words, our current terminal will be captured as stdout and stderr for the containers. The popular kubernetes CRI, containerd, CRI-O, etc. manages container runtime by implementing a wrapper around runc and providing a socket file descriptor that runc sets the container up with - this is what powers functionality such as <code>kubectl logs</code> and <code>kubectl exec -it</code></p>
+<p>In order to keep this discussion streamlined, we are going to let runc capture for the container process the calling shell's fds  - in other words, our current terminal will be captured as stdin, stdout and stderr for the container created. The popular kubernetes CRIs, containerd, CRI-O, etc. manage container runtime by implementing a wrapper around runc and providing a socket file descriptor that runc sets the container up with then exits - this is what implements functionality such as <code>kubectl logs</code> and <code>kubectl exec -it</code> as well.</p>
 </div>
-<p>|   a. To poke arround the pod environment - check the /proc/net directory of the container task, and do the same for pod-2- retrieve the pid of the container that is started - the PID can be used to enter the process' namespaces, with <code>nsenter -n -t &lt;PID&gt;</code> command, as runc has exited and parented the current shell to the container, there is no other way to exec back into this running (*pod)container. For the simplicity of our conversation we will use the <code>ip netns</code> to exec into the process namespace without needing to look up PIDs going forward</p>
+<p>|   a. From the default terminal, we can poke arround the pod environment - like check the /proc/net directory setup in the containers. However, first, we should retrieve the pid of the created containers. The PID can be used to enter a container process' namespace, with the <code>nsenter -n -t &lt;PID&gt;</code> command. In this mode runc is running as a parent process to the container, there is no way to exec/attach to the running (*pod)container from the terminal runc has used. For the simplicity of this post, we are simply leaving the terminals hijacked by runc and using another terminal to exec/attach to the container(s).</p>
 <pre><code class="language-sh">sudo runc list
 sudo nsenter -n -t &lt;PID&gt; curl localhost:8080
-sudo nsenter -n -t &lt;PID&gt; curl amazon.com
+sudo nsenter -n -t &lt;PID&gt; curl github.io
 sudo nsenter -n -t &lt;PID&gt; cat /proc/net/route
 </code></pre>
-<p>The <code>localhost</code> connection succeeds from the command above, while the connection to an external <code>amazon.com</code> endpoint fails with <code>Could not resolve host amazon.com</code> - as there are no routes set up. So, lets us finish wiring up the pod networking, as a CNI would.</p>
+<p>And to poke around the routes in the pod network use <code>cat /proc/net/route</code> or <code>ip route</code> commands. The <code>localhost</code> connection succeeds from the command above, while the connection to an external <code>github.io</code> endpoint fails with <code>Could not resolve host github.io</code> - as there are no routes besides the one for loopback configured by default. So, lets us finish wiring up the pod networking, shall we?</p>
 <h4 id="wiring-up-the-pod-network">Wiring Up The Pod Network</h4>
 <ol start="7">
-<li>we continue the setup by assigning IPs to both pod-1 and pod-2, from arbitrary private CIDR, 100.64.0.0/16, with minimal chance of collisions with any network. This is the functionality of an IPAM in cluster network. Note that we are using a virtual pod IP range, other CNIs, for example, aws-node CNI, uses real IP from the VPC subnets for a more resource-expensive but faster and better external networking.</li>
+<li>we continue the setup by assigning IPs to both pod-1 and pod-2, from arbitrary private CIDR, 100.64.0.0/16, with minimal chance of collisions with your machine's private network. There is still a chance of collision if your network is using the 100.64.0.0/16 CIDR we chose, you should choose another <a href="https://datatracker.ietf.org/doc/html/rfc1918">private IP range</a></li>
 </ol>
+<p>Assigning IP is the functionality of a CNI's IPAM in kubernetes cluster network. Note that we are using a virtual pod IP range, like a lot of CNIs, while some others, for example <a href="https://github.com/aws/amazon-vpc-cni-k8s">amazon VP CNI</a>, uses real private IPs from a VPC for a more resource-expensive approach.</p>
+<p>And for even further simplicity, we will be using the <code>ip netns</code> command rather than <code>nsenter</code> used prior, to attach to a container's network namespace. We can avoid having to pick up the started container PIDs this way moving forward</p>
 <pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 ip addr add 100.64.0.9/24 dev veth-pod-1
 sudo ip netns exec veth-ns-test-pod-2 ip addr add 100.64.0.10/24 dev veth-pod-2
 </code></pre>
 <ol start="8">
-<li>we create the pod-to-pod connectivity next using a bridge device. Docker uses a similar bridge device for container connections, different CNIs implement this differently;</li>
+<li>we create the pod-to-pod connectivity next using a bridge device. Several CNIs implement different Linux networking device for setting up pod-to-pod connection;</li>
 </ol>
 <ul>
-<li>aws CNI uses a dummy interface for pod-to-pod routing, real VPC IPs are used, so in-VPC and external networking routes setup is not required</li>
+<li>amazon VPC CNI uses a dummy interface for pod-to-pod routing, real VPC IPs are used, so in-VPC and external networking routes setup is not required</li>
 <li>calico/weave uses a tunnel device for pod-to-pod connection, virtual IPs are used, which can be IP resource cheap but expensive routing and connecting to external endpoints</li>
 </ul>
-<p>|   a. bring up a bridge device for the in-cluster connections</p>
+<p>|   a. we bring up a Linux network bridge device for the pod-to-pod networking</p>
 <pre><code class="language-sh">sudo ip link add custom-cni type bridge 
 </code></pre>
 <p>|   b. most CNIs use the default gateway address of 169.254.1.1 in pod namespaces. However, for clarity we use the 100.64.0.1 of the pod virtual IP CIDR range</p>
 <pre><code class="language-sh">sudo ip addr add 100.64.0.1/24 dev custom-cni
 sudo ip link set custom-cni up
 </code></pre>
-<p>|   c. plug the veth peer devices of the pods currently in the host network namespace into the custom-cni bridge device - check the routes in pod net-ns (<code>cat /proc/net/route</code> or <code>ip route</code>) and notice the net manager has configured the routes wired up, also notice veth-peer in host net-ns has been set to be promiscuous (<code>ip -details link show veth-peer-pod-1</code>)</p>
+<p>|   c. we plug the veth peer of the pods net interfaces, that are in the host network namespace into the custom-cni bridge device. And while at it, we should check the routes for these veth peer devices on the host net-ns, run the <code>ip route</code> command. Notice the Linux network manager has wired the interfaces routes, also notice veth-peer in host net-ns has been set to be promiscuous (<code>ip -details link show veth-peer-pod-1</code>)</p>
 <pre><code class="language-sh">sudo ip link set dev veth-peer-pod-1 master custom-cni
 sudo ip link set dev veth-peer-pod-2 master custom-cni
 </code></pre>
@@ -606,62 +608,37 @@ sudo ip link set dev veth-peer-pod-2 master custom-cni
 <pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 ip route add default via 100.64.0.1
 sudo ip netns exec veth-ns-test-pod-2 ip route add default via 100.64.0.1
 </code></pre>
-<p>|   e. if both containers not already started in step 7e., run pod-1 and pod-2 in 2 separate terminals - <code>cd /run/containerd/pod-2/ &amp;&amp; sudo runc run pod-2</code>. Open a 3rd terminal and we can test connectivity from one pod to the second pod, and itself</p>
+<p>|   e. if both containers are not already running from a prior step, start them now. And in a new terminal, we can test connectivity from one pod to the second pod, and itself using the assigned private IP</p>
 <pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 curl -ikv 100.64.0.9:8080
 sudo ip netns exec veth-ns-test-pod-1 curl -ikv 100.64.0.10:8080
-sudo ip netns exec veth-ns-test-pod-1 curl -ikv amazon.com
+sudo ip netns exec veth-ns-test-pod-1 curl -ikv github.io
 </code></pre>
-<p><em><code>Troubleshooting tip</code></em>: You can always diagnose pod network status and issues by running a tcpdump on interfaces in the pod network namespaces, while making inbound or outbound connections from yet another terminal, then analyze packet capture with;</p>
-<pre><code class="language-sh">sudo ip netns exec veth-ns-test-pod-1 tcpdump -vvv -i any -w pod1.pcap
-sudo tcpdump -r pod1.pcap
-</code></pre>
-<p>The pod network connection to itself and connection from pod-1 to pod-2 and vice-versa, using assigned IPs succeed, but external connection to <code>amazon.com</code> continues to fail. Depending on familiarity with iptables, <a href="https://guide.aws.dev/articles/AR2fdoT2ZkSlGyX9JMVwNfeQ#midway">Dola's article</a> may be appropriate requisite reading, but we will highlight iptables usage here enough for our discussion as well.</p>
-<p>Why does pod-to-pod connections succeed after setting up the bridge? Well, in a pod-to-pod connection on the same host, packets are flowing from one Linux process to another, and not using any external network interfaces. The bridge we created loads with netfilter_call mode enabled by default, and from the perspective of the iptable traversal, packet flow would look like;</p>
-<p><img alt="Pod-1-to-Pod-2" src="https://raw.githubusercontent.com/AbeOwlu/kube-journal/refs/heads/docs/docs/assets/ip5.drawio.png?token=GHSAT0AAAAAACR2TFHYGYTRZWVC42BJ5DNEZ2BDWTQ" /></p>
+<p>The pod network connection to itself and connection from pod-1 to pod-2 and vice-versa, using assigned IPs succeed, but external connection to <code>github.io</code> continues to fail. Some familiarity with <a href="http://www.faqs.org/docs/iptables/traversingoftables.html">iptables may be appropriate</a>, but we will highlight iptables rules used here enough for our discussion.</p>
+<p>Why does pod-to-pod connections succeed after setting up the bridge? Well, in a pod-to-pod connection on the same host, packets are flowing from one Linux process to another, and not egressing the system through any network interface. The bridge device we created loads with netfilter call mode enabled by default, i.e., kernel iptable is allowed to route traversing packets. And from the perspective of the iptable traversal, packet flow is local to the computer system;</p>
+<p><img alt="Pod-1-to-Pod-2" src="https://github.com/abeowlu/kube-journal/blob/docs/docs/assets/ip5.drawio.png?raw=true" /></p>
 <div class="admonition warning">
 <p class="admonition-title">NB: Troubleshooting Issues</p>
-<p>if you have unexpected connection issues at this point. You may not be using a cluster workernode, which would have some necessary network configurations pre-implemented. See glossary section on loading bridge with net.bridge.bridge-nf-call-iptables on non-cluster computers. And check the troubleshooting tips in the article to get grease under your finger nails. </p>
+<p>if you have unexpected connection issues at this point. You may not be using a cluster workernode, which would have some necessary network system configurations pre-implemented. See <a href="../network-troubleshooting/">troubleshootoing article section creating bridge with net.bridge.bridge-nf-call-iptables</a>. And check the troubleshooting tips in the article to get grease under your finger nails. </p>
 </div>
-<ul>
-<li>
-<p>the raw iptables chains aren't often used by most processes for good reason, and are usually pass through by default. An example reason, a process' packet that should be monitored by conntrack should not match rules in the raw-OUTPUT. This table is invoked before conntrack netfilter hooks are called by the kernel. While the other chains allow the packet to flow;</p>
-</li>
-<li>
-<p><code>sudo iptables -L FORWARD -t mangle</code>- mangle-FORWARD is ACCEPT by default and open</p>
-</li>
-<li><code>sudo iptables -L FORWARD -t filter</code> - filter-FORWARD is ACCEPT by default for packet not matching rules in the chain. </li>
-</ul>
 <hr />
-<p>We can make a quick test to block packets from pod-1(100.64.0.9/32) specifically, while pod-2 is still allowed</p>
-<pre><code class="language-sh">sudo iptables -A FORWARD -t filter -s 100.64.0.9/32 -j DROP
-sudo ip netns exec veth-ns-test-pod-1  curl -ikv 100.64.0.10:8080
-</code></pre>
-<ul>
-<li>allow connection from pod-1 again by removing this firewall rule;</li>
-</ul>
-<pre><code class="language-sh">sudo iptables -D FORWARD -s 100.64.0.9/32 -j DROP
-</code></pre>
-<p>NB: nodeLocalDNS is an example of a kubernetes component that does use raw-OUTPUT, which would cause its traffic not to appear in the conntrack table.</p>
-<hr />
-<p>Next, we complete setting up our custom network paths, as pictured below, on the compute node. At any point, you can perform the actions in <code>Troubleshooting tip</code> above and analyze captured packets to see its flow;</p>
-<p><img alt="image" src="https://raw.githubusercontent.com/AbeOwlu/kube-journal/refs/heads/docs/docs/assets/ip4.drawio.png?token=GHSAT0AAAAAACR2TFHY7CLTHC3ROZDJCYXEZ2BDYFQ" /></p>
-<p>The last CNI task we perform is set up pod-to-external destination network routes. Then we perform the kube-proxy component's function by creating custom virtual services to expose our custom pods, pod-1 and pod-2 containers, simulating Kubernetes clusterIP service, to round off this discussion.</p>
+<p>The last CNI task we perform is set up pod-to-external destination network routes. Then we manually implement the kube-proxy component's function of creating custom virtual services, to expose our custom pods, to round off this discussion. We do this by completing the setup of the custom network path as in the image below on the compute node. At any point, you can perform the actions in <code>Troubleshooting tip</code> to analyze captured packets to see its flow;</p>
+<p><img alt="image" src="https://github.com/abeowlu/kube-journal/blob/docs/docs/assets/ip4.drawio.png?raw=trueQ" /></p>
 <ol start="9">
-<li>we set up iptables rule to allow communication from our cluster custom-cni bridge interface on a network range of 100.64.0.0/16 to connect externally through the current VPC, and whatever network range it has. From the perspective of iptable traversal, packet flow would look like;</li>
+<li>we set up iptables rule to allow communication from our cluster custom-cni bridge interface on a network range of 100.64.0.0/16 to connect externally through our node's network interface, and whatever CIDR range it is on. From the perspective of iptable traversal, packet flow would look like;</li>
 </ol>
-<p><img alt="pod-to-external" src="https://raw.githubusercontent.com/AbeOwlu/kube-journal/refs/heads/docs/docs/assets/ip1.drawio.png?token=GHSAT0AAAAAACR2TFHYJG4YHOVQTM3VDNUOZ2BDY5A" /></p>
+<p><img alt="pod-to-external" src="https://github.com/abeowlu/kube-journal/blob/docs/docs/assets/ip1.drawio.png?raw=true" /></p>
 <ul>
-<li>the switch from our custom-cni bridge interface to the node's primary interface in ROUTING DECISIONS is performed by the kernel netwrok module</li>
+<li>the switch from our custom-cni bridge interface to the node's primary interface in ROUTING DECISIONS is performed by the kernel networking</li>
 <li><code>sudo iptables -L OUTPUT -t mangle &amp;&amp; sudo iptables -L POSTROUTING -t mangle</code> are open chains allowing free packet flow by default, as are the others</li>
-<li>the packets from the pods are egressing into the VPC using the private virtual IPs we assigned - 100.64.0.9 and 100.64.0.10. Amazon VPC, and most network will reject/drop this packet with unknown source IP address by default for (AWS) security reasons. We need to SNAT pod traffic to external destinations similar to aws CNI AWS-SNAT-CHAIN rules. There are a number of ways to achieve this SNAT, with simplicity as our main consideration - we will implement it in the last chain above, nat-POSTROUTING;</li>
+<li>the packets from the pods are egressing into the host network using the private virtual IPs we assigned - 100.64.0.9 and 100.64.0.10. Some networks will reject/drop such packets with unknown source IP address as martian packets, or by firewall src/dst checks, for security reasons. We need to SNAT pod traffic to external destinations to avoid this. There are a number of ways to achieve this SNAT, with simplicity as our main consideration - we will implement it in the last chain in the image above, nat-POSTROUTING;</li>
 </ul>
 <p>|   a. retrieve the primary private IP of your worker node</p>
 <pre><code class="language-sh">nodeIP=$(sudo ip -details -j addr show | jq '.[].addr_info[] | select(.label == &quot;eth0&quot;) | .local') &amp;&amp; localIP=$(sudo echo ${nodeIP} | tr -d '&quot;')
 </code></pre>
-<p>|   b. we insert a rule in the nat-POSTROUTING chain, matching packet from the pod CIDR, and tracking connections to external destination, i.e. not local, and SNAT the packet - change source IP address from the pod IP to the host IP. </p>
+<p>|   b. we insert a rule in the nat-POSTROUTING chain, matching packet from the pod CIDR, and tracking connections to external destination, i.e. not local, and SNAT the packet - change packet header source IP address from the pod IP to the host's primary IP. </p>
 <pre><code class="language-sh">sudo iptables -I POSTROUTING -t nat -s 100.64.0.0/16 -m addrtype ! --dst-type LOCAL -m conntrack --ctstate NEW,ESTABLISHED -j SNAT --to-source ${localIP}
 </code></pre>
-<p>Test: <code>sudo ip netns exec veth-ns-test-pod-1 curl -ikv amazon.com</code></p>
+<p>Test: <code>sudo ip netns exec veth-ns-test-pod-1 curl -ikv github.io</code></p>
 <ol start="10">
 <li>Lastly, we use iptables to expose the pod-1, 100.64.0.9 and pod-2, 100.64.0.10, behind virtual service IPs which we will pick from an arbitraru range of 198.19.0.0/16, with minimal collision chance. We will stick close to how kube-proxy sets up a similar clusterIP service type. First, the iptable traversal from pod-1 to service-2 delivered to pod-2 looks like this;</li>
 </ol>

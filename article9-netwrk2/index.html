@@ -347,7 +347,7 @@
 <p>We will start by adding 2 more pods to our custom network, with each pod added as a second endpoint behind the existing custom services, service-1 and service-2. Then we expose these services externally on a nodePort, to understand how kube-proxy sets this up for kubernetes clusters. And optionally expose the nodePorts behind an elastic loadbalancer for public connections. This should hopefully give us deep insight into our iptables rule management grows for each additional service and pod(s). Then we replace our iptables configuration with IPVS to use the benefits of the latter that we discuss, for kernel packet distribution.</p>
 <h4 id="create-pod-3-4-sandboxes">Create Pod 3 &amp; 4 Sandboxes</h4>
 <ol>
-<li>we add 2 more pod sandboxes, pod-3 and pod-4 to our cluster, by running a few of the steps in the first discussion.</li>
+<li>we add 2 more pod sandboxes, pod-3 and pod-4 to our cluster, by running the setup commands from the <a href="(article8-netwrking.md)">first discussion</a>.</li>
 </ol>
 <p>|   a. networking configuration commands;</p>
 <pre><code class="language-sh">sudo ip netns add veth-ns-test-pod-3

@@ -2,18 +2,30 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://abeowlu.github.io/</loc>
-         <lastmod>2025-09-27</lastmod>
+         <lastmod>2025-10-26</lastmod>
+    </url>
+    <url>
+         <loc>https://abeowlu.github.io/article10-netfilter/</loc>
+         <lastmod>2025-10-26</lastmod>
     </url>
     <url>
          <loc>https://abeowlu.github.io/article8-netwrking/</loc>
-         <lastmod>2025-09-27</lastmod>
+         <lastmod>2025-10-26</lastmod>
     </url>
     <url>
          <loc>https://abeowlu.github.io/article9-netwrk2/</loc>
-         <lastmod>2025-09-27</lastmod>
+         <lastmod>2025-10-26</lastmod>
+    </url>
+    <url>
+         <loc>https://abeowlu.github.io/gputech/</loc>
+         <lastmod>2025-10-26</lastmod>
+    </url>
+    <url>
+         <loc>https://abeowlu.github.io/network-troubleshooting/</loc>
+         <lastmod>2025-10-26</lastmod>
     </url>
     <url>
          <loc>https://abeowlu.github.io/trx-cowry/</loc>
-         <lastmod>2025-09-27</lastmod>
+         <lastmod>2025-10-26</lastmod>
     </url>
 </urlset>
