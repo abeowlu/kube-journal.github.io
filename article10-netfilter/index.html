@@ -22,7 +22,7 @@
     
     
       
-        <title>Article10 netfilter - Tech Deep Dives and Tutorials</title>
+        <title>Background: Reason for Netfilter tables - Tech Deep Dives and Tutorials</title>
       
     
     
@@ -71,6 +71,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#background-reason-for-netfilter-tables" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -103,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Article10 netfilter
+              Background: Reason for Netfilter tables
             
           </span>
         </div>
@@ -246,6 +251,8 @@
   
   
   
+    
+  
   
 </nav>
                   </div>
@@ -260,9 +267,168 @@
                   
 
 
-  <h1>Article10 netfilter</h1>
+<h1 id="background-reason-for-netfilter-tables">Background: Reason for Netfilter tables</h1>
+<p>The lengthy discussion on implementing cluster networking and routing manually using <a href="docs/article8-netwrking.md">iptables first</a>, and then <a href="docs/article9-netwrk2.md">ipvs</a> may provide some context, if required, for the kube-proxy nftable routing feature now generaly available in Kubernetes clusters. And this should be a concise introductory article with reference to dive deep resources.</p>
+<h1 id="motivation-for-netfilter-tables">Motivation for Netfilter tables</h1>
+<p>There is the initial and still default "iptables" modes, and the "ipvs" mode that adds more optimization to the iptables in large clusters. So why do we need yet a 3rd kube-proxy mode? Lets start by addressing this "why?" question. As in the articles linked above;</p>
+<ul>
+<li>
+<p>the iptables mode uses the default linux kernel iptables firewall filtering and routing. Pro, it is simple and well-known. Con, other than inbuilt non-optimal logic, etc. iptables rules can quickly grow large and unwieldy as the cluster size(service and endpoint) grows. While routing speed drastically reduces and overhead increase as rules grow, since every packet needs to be checked each rules till a match is foudn before it is routed.</p>
+</li>
+<li>
+<p>ipvs mode then attempts to solve both the bottleneck of iptables' slow routing and large unwieldy ruleset as cluster size grows, with minimal virtual service sets, and servers. However, ipvs implementation, hashing, routing etc can be a bit non-intuitive. For example, it still uses some part of iptables rules creation to route cluster traffic, significantly lower number of rule required compared to just iptables, but it is still there. 
+Also worth calling out, the intuitiveness of ipvs also introduced complexities in implementing kube-proxy cluster features with ipvs - <a href="https://github.com/kubernetes/kubernetes/issues/124260">sample issue 1</a>, <a href="https://github.com/kube-vip/kube-vip/issues/745">sample issue 2</a> ,<a href="https://github.com/kubernetes/kubernetes/issues/599760">sample issue 3</a>, and so on</p>
+</li>
+<li>
+<p>so nftables mode then attempts to remove dependence or tie-in with iptables mode, while offering the speed and robustness of the ipvs routing, and allowing the full suite of kube-proxy features to be available with more intuitive/simplified syntax and implementation. This <a href="https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/#why-nftables-part-2-control-plane-latency">feature availability is key</a>. 
+All this said, it is worth calling out that it may have no meaningful advantages to implement nftable mode on smal clusters. But in very large clusters, suggesting nftable mode may provide significant improvement and performance benefits for cluster networking.</p>
+</li>
+</ul>
+<p>To implementation, again, we will do this manually to have some grasp of the plumbing of the traffic routing in the kernel as well a user-space(if available). </p>
+<ul>
+<li>Set up custom pod network namespaces, etc. with the commands below</li>
+</ul>
+<pre><code>sudo ip netns add veth-ns-test-pod-3
+sudo ip netns add veth-ns-test-pod-4
 
+sudo ip link add veth-pod-3 type veth peer name veth-peer-pod-3
+sudo ip link add veth-pod-4 type veth peer name veth-peer-pod-4
 
+sudo ip link set dev veth-pod-3 netns veth-ns-test-pod-3
+sudo ip link set dev veth-pod-4 netns veth-ns-test-pod-4
+
+sudo ip netns exec veth-ns-test-pod-3 ip addr add 100.64.0.19/24 dev veth-pod-3
+sudo ip netns exec veth-ns-test-pod-4 ip addr add 100.64.0.20/24 dev veth-pod-4
+
+sudo ip link add dev custom-cni type bridge
+sudo ip addr add 100.64.0.1/24 dev custom-cni
+sudo ip link set custom-cni up
+sudo ip link set custom-cni promisc on
+
+sudo ip link set dev veth-peer-pod-3 master custom-cni
+sudo ip link set dev veth-peer-pod-4 master custom-cni
+
+sudo ip netns exec veth-ns-test-pod-3 ip link set dev lo up
+sudo ip netns exec veth-ns-test-pod-4 ip link set dev lo up
+
+sudo ip link set dev veth-peer-pod-3 up
+sudo ip link set dev veth-peer-pod-4 up
+
+sudo ip netns exec veth-ns-test-pod-3 ip link set dev veth-pod-3 up
+sudo ip netns exec veth-ns-test-pod-4 ip link set dev veth-pod-4 up
+
+sudo ip netns exec veth-ns-test-pod-3 ip route add default via 100.64.0.1
+sudo ip netns exec veth-ns-test-pod-4 ip route add default via 100.64.0.1
+</code></pre>
+<ul>
+<li>create and run test nginx containers in a sandbox and networking created above</li>
+</ul>
+<pre><code>sudo mkdir -p /run/containerd/pod-3/
+sudo mkdir -p /run/containerd/pod-4/
+
+sudo ctr image pull docker.io/nginxinc/nginx-unprivileged:latest &amp;&amp; \
+sudo ctr run --detach docker.io/nginxinc/nginx-unprivileged:latest default-nginx
+
+sudo cp -r /run/containerd/io.containerd.runtime.v2.task/default/default-nginx/rootfs /run/containerd/pod-3/
+sudo cp -r /run/containerd/io.containerd.runtime.v2.task/default/default-nginx/rootfs /run/containerd/pod-4/
+
+cd /run/containerd/pod-3/ &amp;&amp; sudo runc spec 
+cd /run/containerd/pod-4/ &amp;&amp; sudo runc spec
+
+sudo echo $(jq '(.linux.namespaces[] | select(.type == &quot;network&quot;)) += {&quot;path&quot;: &quot;/var/run/netns/veth-ns-test-pod-3&quot;}' \
+/run/containerd/pod-3/config.json)  | sudo jq '.' | sudo tee -i /run/containerd/pod-3/config.json
+sudo echo $(jq '(.linux.namespaces[] | select(.type == &quot;network&quot;)) += {&quot;path&quot;: &quot;/var/run/netns/veth-ns-test-pod-4&quot;}' \
+/run/containerd/pod-3/config.json)  | sudo jq '.' | sudo tee -i /run/containerd/pod-4/config.json
+
+sudo echo $(jq '(.process.capabilities.bounding) += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] | .process.capabilities.permitted += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] | .root.readonly = false | .process.args = [ &quot;/docker-entrypoint.sh&quot;, &quot;nginx&quot;, &quot;-g&quot;, &quot;daemon off;&quot; ]' /run/containerd/pod-3/config.json) sudo jq '.' | sudo tee -i /run/containerd/pod-3/config.json
+sudo echo $(jq '.process.capabilities.bounding += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] | .process.capabilities.permitted += [ &quot;CAP_CHOWN&quot;, &quot;CAP_SETGID&quot;, &quot;CAP_SETUID&quot; ] | .root.readonly = false | .process.args = [ &quot;/docker-entrypoint.sh&quot;, &quot;nginx&quot;, &quot;-g&quot;, &quot;daemon off;&quot; ]' /run/containerd/pod-4/config.json) | sudo jq '.' | sudo tee -i /run/containerd/pod-4/config.json
+
+cd /run/containerd/pod-3 &amp;&amp; sudo runc run pod-3
+---
+# duplicate or open a new terminal and start pod-4
+cd /run/containerd/pod-4 &amp;&amp; sudo runc run pod-4
+
+# in a 3rd duplicate or new terminal test pod-to-pod connections from pod-3 to IP 100.64.0.20:8080 of pod-4 and vice-versa
+sudo ip netns exec veth-ns-test-pod-3 curl -ikv 100.64.0.20:8080
+</code></pre>
+<h1 id="implementation">Implementation</h1>
+<p>So far so good, all these commands have done is set up a manual pod sandbox with simulated cni networking. No cluster service IP, node Port, etc. has been created. For service IP routing we use nftable to set up manually similar to how kube-proxy in nftables mode would.</p>
+<p>It may be worth starting by checking that you have nftables installed by default. On newer EKS optimized AMI from AL2023, thereabout, this should be the case. For older AMIs, you may want to install this. See this for some requirements documentation, but Linux kernels at or newer than  5.10, should meet the reuirements here.</p>
+<pre><code>nft -a list ruleset &amp;&amp; nft list tables
+# if not present
+yum install nftables -y
+</code></pre>
+<ol>
+<li>lets start off by creating the nft table, called custom-proxy (play on the kube-proxy naming). In this table, we create a masquerading rule to allow hairpin traffic using cluster service IP. That is, a pod can connect to itself using its cluster service IP. (Notice that local loopback IP and pod loopback IP have been enabled in the cni steps above). Then next we create the custom pods endpoint rules, 1st one jumping to the masquerade chain for hairpin, and  and build on this as we go.</li>
+</ol>
+<pre><code>sudo nft add table ip custom-proxy
+
+sudo nft add chain ip custom-proxy mark-for-masquerade
+sudo nft add rule ip custom-proxy mark-for-masquerade &quot;meta mark set meta mark | 0x00004000&quot;
+
+sudo nft add chain ip custom-proxy masquerading
+sudo nft add rule ip custom-proxy masquerading &quot;meta mark &amp; 0x00004000 == 0x00000000 return&quot;
+sudo nft add rule ip custom-proxy masquerading &quot;meta mark set meta mark ^ 0x00004000&quot;
+sudo nft add rule ip custom-proxy masquerading &quot;masquerade fully-random&quot;
+
+CHAIN_1='endpoint-custoom-proxy-ns/pod-3/tcp/http__100.64.0.19/8080'
+CHAIN_2='endpoint-custoom-proxy-ns/pod-4/tcp/http__100.64.0.20/8080'
+sudo nft add chain ip custom-proxy &quot;$CHAIN_1&quot;
+sudo nft add rule ip custom-proxy &quot;$CHAIN_1&quot; &quot;ip saddr 100.64.0.19 jump mark-for-masquerade&quot;
+sudo nft add rule ip custom-proxy &quot;$CHAIN_1&quot; &quot;meta l4proto tcp dnat to 100.64.0.19:8080&quot;
+
+sudo nft add chain ip custom-proxy &quot;$CHAIN_2&quot;
+sudo nft add rule ip custom-proxy &quot;$CHAIN_2&quot; &quot;ip saddr 100.64.0.20 jump mark-for-masquerade&quot;
+sudo nft add rule ip custom-proxy &quot;$CHAIN_2&quot; &quot;meta l4proto tcp dnat to 100.64.0.20:8080&quot;
+</code></pre>
+<p>Note: keen readers may observe that for the service hairpin traffic above: <code>pod-A -&gt; service-A -&gt; pod-A</code> masquerading, SNAT-ing, the packet from the source pod is introduced, which is unlike the routing in iptables or ipvs mode either. This is because the initial connection goes through the conntrack table, and without SNAT, the reply packet attempts to go through the custom cni bridge back to itself, the originating pod-A. This causes an asymmetric routing which may be discarded as unexpected connection. To avoid this, we make sure traffic are symmetrically routed by enforcing the node IP as the source</p>
+<ol start="2">
+<li>next, we build 1 single service / clusterIP chain and rules that expose pod-3 and pod-4 endpoints we just created in the custom-proxy table. This is how the cluster virtual services are implemented in the nft mode, and it also shows off the traffic/load balancing implementation of nftables from 1 service to 2 endpoints with a <code>numgen random mod 2 ...</code> random(statistically fair, but not workload fair, as established in prior articles) 50/50 distribution. There are fairer algorithms (advantages of ipvs as well) that you could play with in the nft rule to send connection to one endpoint or the other.</li>
+</ol>
+<pre><code>SERVICE='service-custom-proxy-ns/custom-service/tcp'
+sudo nft add chain ip custom-proxy &quot;$SERVICE&quot;
+sudo nft add rule ip custom-proxy &quot;$SERVICE&quot; &quot;numgen random mod 2 vmap { 0 : goto $CHAIN_A, 1 : goto $CHAIN_B }&quot;
+</code></pre>
+<ol start="3">
+<li>lets create the routing for a generically selected service clusterIP value of 198.19.0.10, that send traffic to this endpoint to the $SERVICE chain created above.</li>
+</ol>
+<pre><code>sudo nft add map ip custom-proxy custom-service-ips '{ type ipv4_addr . inet_proto . inet_service : verdict ; flags constant ; elements = { 198.19.0.10 . tcp . 8080 : goto service-custom-proxy-ns/custom-service/tcp } }'
+
+sudo nft add chain custom-proxy custom-services
+sudo nft add rule ip custom-proxy custom-services &quot;ip daddr . meta l4proto . tcp dport vmap @custom-service-ips&quot; 
+</code></pre>
+<ol start="4">
+<li>the last building block to place now, is how to divert the flow of traffic through the cluster (worker nodes) to go through the nftable. We do this by creating base chains, can imagine inserting network hooks into certain point of the linux network flow. We use the destination prerouting for traffic to the pods, and source postrouting for traffic leaving the pods. These ensures the cluster service chain is looked at while deciding on routing</li>
+</ol>
+<pre><code>sudo nft add chain ip custom-proxy nat-prerouting '{ type nat hook prerouting priority -100 ; }'
+sudo nft add chain ip custom-proxy nat-postrouting '{ type nat hook postrouting priority 100 ; }'
+
+# jump to services chain from the base chain nat-prerouting for pod traffic
+sudo nft add rule ip custom-proxy nat-prerouting jump custom-services
+
+# jump to masquerade chain from the base chain nat-postrouting for pod traffic
+sudo nft add rule ip custom-proxy nat-postrouting jump masquerading
+</code></pre>
+<p>And just like linkning lego blocks together, we have built out how Kubernetes cluster network routing works with the nftables mode. There are a few more intricacies that kube-proxy add for firewall, kube-VIP, dropped unsecure connections, etc. that we dont look into. We however, have a clear grasp of the main blocks that is used to set up successful routing; 
+- chains for each pod endpoint(s) are created, and the enforcing node IP masquesrading for self-loopback using the pods' service IP
+- a chain for each service exposing pod endpoints are created, balancing traffic to the pod endpoint chain above
+- a map for cluster services to endpoint destination is created
+- and a chain sending service connection to the right element/entry in this map is also created
+- and lastly, there is a hook for the nftable into the Linc kernel network flow so this whole configuration is looked into while routing traffic.</p>
+<p>Test conncetion using cluster IP from one pod, or the other</p>
+<pre><code>sudo ip netns exec veth-ns-test-pod-3 curl -ikv 198.19.0.10:8080
+</code></pre>
+<p>Note here that while connection from the host to the pod works as we already established. Connection from the host to the service clusterIP, 198.19.0.10:8080, fails. Without getting bogged down with the details, the previous articles on iptables and ipvs describes how routing occurs, but the simple reason in local connection, the hook we setup in destination prerouting is completely bypassed. So we ca instead hook into the nat-output, similar to how kube-proxy would also set it up. Create the hooks and Test that connection as well.</p>
+<pre><code>sudo nft add chain ip custom-proxy nat-output '{ type nat hook output priority -100 ; }'
+sudo nft add rule ip custom-proxy nat-output jump custom-services
+</code></pre>
+<h1 id="conclusion">Conclusion</h1>
+<p>There is avenue to experiment further with our implementation by implementing a map for nodePorts, and in the service chain creating a rule that send nodePort service connection to the correct element in the nodePort map created. <a href="https://kubernetes.io/docs/reference/networking/virtual-ips/#migrating-from-iptables-mode-to-nftables">A few important further reading if testing this out, nodePort in iptables/ipvs mode that is more open, is more precise and cam only be reached using worker nodes' primary IP</a>. Some 3rd party Kubernetes ingress controllers that broadcast traffic to all IP:NodePort may experience issue moving to nftables mode.</p>
+<p>Also, external connection fail from the pod when using cname instead of IP. This is because the dns traffic from the pod to a VPC .2 endpoint is not masked. And this traffic is dropped as unexpected in the VPC. You can look to send dns traffic through the mark-for-masquerading chain in the nftables. </p>
+<p>However, we wont be getting bogged down with implementing these features in this brief introduction into how this kube-proxy nftables mode works at this time. Again you can check out those previous articles for iptables and ipvs implementation for verbose discussions on routing.</p>
+<p>References:
+- https://netfilter.org/projects/nftables/manpage.html
+- https://kubernetes.io/blog/2025/02/28/nftables-kube-proxy/#why-nftables-part-2-control-plane-latency</p>
 
 
 
